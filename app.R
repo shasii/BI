@@ -1,90 +1,238 @@
 # Install required packages if not installed
-# install.packages(c("shiny", "lmtest"))
+if (!require(shiny)) install.packages("shiny")
 
-# Load libraries
+# Load required libraries
 library(shiny)
+library(DT)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
 
-# Define the data
-ecommerce <- data.frame(
-  month = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
-  x1 = c(150000, 160000, 170000, 180000, 190000, 200000, 210000, 220000, 230000, 240000, 250000, 260000),
-  x2 = c(8000, 9500, 10000, 10500, 11000, 9000, 11500, 12000, 12500, 13000, 14000, 15000),
-  x3 = c(5, 4.5, 4.8, 4.6, 5.1, 4.7, 4.9, 5, 5.2, 5.3, 5.4, 5.5),
-  x4 = c(8.5, 8.2, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 8.7, 8.8, 8.9, 9),
-  x5 = c(20000, 22000, 25000, 23000, 30000, 28000, 27000, 35000, 40000, 45000, 50000, 60000),
-  y = c(120, 150, 160, 165, 180, 170, 190, 210, 230, 250, 300, 350)
+# Initial data
+adclick <- data.frame(
+  adplacement = c("day1", "day2", "day3", "day4", "day5", "day6", "day7", "day8", "day9", "day10"),
+  leftsidebar = c(2.5, 2.7, 2.8, 2.6, 3, 2.4, 2.9, 2.5, 2.6, 2.7),
+  centerpage = c(3.8, 3.5, 4, 3.7, 3.9, 3.6, 4.1, 3.4, 3.8, 3.9),
+  rightsidebar = c(3.1, 2.9, 3, 3.2, 3.3, 2.8, 3.4, 3.1, 3.2, 3.5)
 )
 
-# Define the UI
-ui <- fluidPage(
-  titlePanel("E-commerce Sales Prediction"),
-  sidebarLayout(
-    sidebarPanel(
-      numericInput("input_x1", "Enter Visitors:", value = 200000),
-      numericInput("input_x2", "Enter Transactions:", value = 10000),
-      numericInput("input_x3", "Enter Items/Transaction:", value = 5),
-      numericInput("input_x4", "Enter Rating:", value = 8.5),
-      numericInput("input_x5", "Enter Ads:", value = 50000),
-      actionButton("predictButton", "Predict")
-    ),
-    mainPanel(
-      plotOutput("predictionPlot"),
-      verbatimTextOutput("predictionText")
+# Reshape the data for ANOVA
+adclick_long <- reshape2::melt(adclick, id.vars = "adplacement", variable.name = "adposition", value.name = "clicks")
+
+# Perform ANOVA for all ad positions
+anova_result <- aov(clicks ~ adposition, data = adclick_long)
+
+# Define UI
+ui <- navbarPage(
+  title = "CTR Data Entry & Analysis",
+  tabPanel(
+    "Data Entry",
+    sidebarLayout(
+      sidebarPanel(
+        h4("Enter Data Manually"),
+        textInput("adplacement", "Ad Placement:"),
+        numericInput("leftsidebar", "Left Sidebar:", value = 0),
+        numericInput("centerpage", "Center Page:", value = 0),
+        numericInput("rightsidebar", "Right Sidebar:", value = 0),
+        actionButton("addRowBtn", "Add Row"),
+        br(),
+        fileInput("file", "Upload Data (CSV only):"),
+        br(),
+        actionButton("loadDataBtn", "Load Data"),
+        br(),
+        actionButton("deleteInitialDataBtn", "Delete Initial Data")
+      ),
+      mainPanel(
+        DTOutput("table"),
+        downloadButton("downloadBtn", "Download Data")
+      )
+    )
+  ),
+  tabPanel(
+    "Visualization",
+    sidebarLayout(
+      sidebarPanel(
+        selectInput("selected_day", "Select Day:", choices = NULL),
+        actionButton("visualizeBtn", "Visualize")
+      ),
+      mainPanel(
+        plotOutput("overallCtrPlot"),
+        plotOutput("dailyCtrPlot")
+      )
+    )
+  ),
+  tabPanel(
+    "T-Test Analysis",
+    sidebarLayout(
+      sidebarPanel(
+        h4("T-Test Analysis"),
+        selectInput("variable1_ttest", "Variable 1:", choices = setdiff(colnames(adclick), "adplacement")),
+        selectInput("variable2_ttest", "Variable 2:", choices = setdiff(colnames(adclick), "adplacement")),
+        actionButton("run_ttest", "Run T-Test")
+      ),
+      mainPanel(
+        verbatimTextOutput("summaryOutput")
+      )
+    )
+  ),
+  tabPanel(
+    "ANOVA Analysis",
+    sidebarLayout(
+      sidebarPanel(
+        h4("ANOVA Analysis"),
+        verbatimTextOutput("anovaSummary"),
+        plotOutput("boxplot")
+      ),
+      mainPanel(
+        verbatimTextOutput("anovaResult")
+      )
     )
   )
 )
 
-# ...
-
-# Define the server
-server <- function(input, output) {
-  model <- reactive({
-    lm(y ~ x1 + x2 + x3 + x4 + x5, data = ecommerce)
+# Define server
+server <- function(input, output, session) {
+  # Reactive values
+  rv <- reactiveValues(data = adclick, available_days = unique(adclick$adplacement), anova_result = NULL)
+  
+  # Function to perform ANOVA
+  perform_anova <- function() {
+    adclick_long <- reshape2::melt(rv$data, id.vars = "adplacement", variable.name = "adposition", value.name = "clicks")
+    rv$anova_result <- aov(clicks ~ adposition, data = adclick_long)
+  }
+  
+  # Add row to the data
+  observeEvent(input$addRowBtn, {
+    new_row <- data.frame(
+      adplacement = input$adplacement,
+      leftsidebar = input$leftsidebar,
+      centerpage = input$centerpage,
+      rightsidebar = input$rightsidebar
+    )
+    rv$data <- rbind(rv$data, new_row)
+    
+    # Update available days
+    rv$available_days <- unique(rv$data$adplacement)
+    
+    # Perform ANOVA on updated data
+    perform_anova()
   })
   
-  output$predictionPlot <- renderPlot({
-    new_data <- data.frame(
-      x1 = input$input_x1,
-      x2 = input$input_x2,
-      x3 = input$input_x3,
-      x4 = input$input_x4,
-      x5 = input$input_x5
-    )
-    
-    predicted_values <- predict(model(), newdata = new_data)
-    
-    bar_colors <- c(rep("blue", length(ecommerce$y)), rep("red", length(predicted_values)))
-    
-    barplot(
-      c(ecommerce$y, predicted_values),
-      col = bar_colors,
-      beside = TRUE,
-      main = "E-commerce Sales Prediction",
-      xlab = "Month",
-      ylab = "Sales",
-      ylim = c(0, max(ecommerce$y, predicted_values) + 50)  # Adjust ylim if needed
-    )
-    
-    axis(1, at = 1:length(ecommerce$month) + 0.5, labels = ecommerce$month)
-    legend("topright", legend = c("Actual Sales", "Predicted Sales"), fill = c("blue", "red"), bty = "n")
+  # Load data from file
+  observeEvent(input$loadDataBtn, {
+    if (!is.null(input$file)) {
+      inFile <- input$file
+      if (grepl("^.*\\.(csv)$", inFile$name)) {
+        # Read the CSV file with sep = ";" and header = FALSE
+        new_data <- read.csv(inFile$datapath, sep = ";", header = FALSE)
+        
+        # Set the column names
+        col_names <- c("adplacement", "leftsidebar", "centerpage", "rightsidebar")
+        names(new_data) <- col_names
+        
+        # Bind the new data to the existing data
+        rv$data <- rbind(rv$data, new_data)
+        
+        # Update available days
+        rv$available_days <- unique(rv$data$adplacement)
+        
+        # Perform ANOVA on updated data
+        perform_anova()
+      } else {
+        showNotification("Invalid file format. Please upload a CSV file.", type = "warning")
+      }
+    }
   })
   
-  output$predictionText <- renderPrint({
-    new_data <- data.frame(
-      x1 = input$input_x1,
-      x2 = input$input_x2,
-      x3 = input$input_x3,
-      x4 = input$input_x4,
-      x5 = input$input_x5
-    )
+  # Update selected_day choices
+  observe({
+    updateSelectInput(session, "selected_day", choices = rv$available_days)
+  })
+  
+  # Render table
+  output$table <- renderDT({
+    datatable(rv$data, editable = TRUE, extensions = 'Buttons', options = list(
+      dom = 'Bfrtip',
+      buttons = c('copy', 'csv', 'excel', 'pdf', 'print')
+    ))
+  })
+  
+  # Download button
+  output$downloadBtn <- downloadHandler(
+    filename = function() {paste("ctr_data_", Sys.Date(), ".csv", sep = "")},
+    content = function(file) {
+      write.csv(rv$data, file)
+    }
+  )
+  
+  # CTR Visualization
+  output$overallCtrPlot <- renderPlot({
+    # Update factor levels
+    rv$data$adplacement <- factor(rv$data$adplacement, levels = rv$available_days)
     
-    predicted_value <- predict(model(), newdata = new_data)
+    # Bar plot of overall CTR values
+    ggplot(tidyr::gather(rv$data, key = "variable", value = "value", -adplacement), 
+           aes(x = adplacement, fill = variable, y = value)) +
+      geom_bar(stat = "identity", position = "dodge") +
+      labs(title = "Overall CTR Performance",
+           x = "Ad Placement",
+           y = "CTR") +
+      theme_minimal()
+  })
+  
+  # Bar plot of daily CTR values
+  output$dailyCtrPlot <- renderPlot({
+    req(input$visualizeBtn)
     
-    cat("Predicted Sales:", round(predicted_value, 2))
+    # Filter data for the selected day
+    selected_day_data <- subset(rv$data, adplacement == input$selected_day)
+    
+    # Reshape data for easier plotting
+    selected_day_data_long <- tidyr::gather(selected_day_data, key = "position", value = "CTR", -adplacement)
+    
+    # Bar plot of daily CTR values
+    ggplot(selected_day_data_long, aes(x = adplacement, y = CTR, fill = position)) +
+      geom_bar(stat = "identity", position = "dodge") +
+      labs(title = paste("CTR Performance for", input$selected_day),
+           x = "Ad Placement",
+           y = "CTR") +
+      theme_minimal()
+  })
+  
+  # T-test for illustration
+  output$summaryOutput <- renderPrint({
+    if (input$run_ttest) {
+      req(!is.null(input$variable1_ttest), !is.null(input$variable2_ttest))
+      
+      t_test_result <- t.test(rv$data[, input$variable1_ttest], rv$data[, input$variable2_ttest])
+      
+      # Check significance level
+      if (t_test_result$p.value < 0.05) {
+        cat("T-Test Results are statistically significant at the 0.05 level.\n")
+      } else {
+        cat("T-Test Results are not statistically significant at the 0.05 level.\n")
+      }
+      
+      # Print summary
+      return(t_test_result)
+    }
+  })
+  
+  # ANOVA for illustration
+  output$anovaResult <- renderPrint({
+    req(!is.null(rv$anova_result))
+    summary(rv$anova_result)
+  })
+  
+  # Delete initial data
+  observeEvent(input$deleteInitialDataBtn, {
+    rv$data <- rv$data[0, ]  # Remove all rows
+    rv$available_days <- character(0)  # Remove available days
+    
+    # Perform ANOVA on updated data
+    perform_anova()
   })
 }
-
-# ...
 
 
 # Run the app
